@@ -109,6 +109,20 @@ class TCPServerHandler:
         finally:
             self.server = None
             self._log("info", "Servidor encerrado.")
+            
+    def send_text(self, text: str):
+        """Envia uma linha de texto (UTF-8) para o cliente conectado, se houver."""
+        if not self.enabled or not self.conn:
+            return False
+        try:
+            if not text.endswith("\n"):
+                text = text + "\n"
+            self.conn.sendall(text.encode("utf-8", errors="ignore"))
+            return True
+        except Exception as e:
+            self._log("warn", f"Falha ao enviar resposta ao cliente: {e}")
+            self.close_conn_only()
+            return False
 
 
 # ======================
