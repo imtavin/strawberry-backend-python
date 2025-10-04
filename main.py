@@ -5,24 +5,50 @@ import os
 import platform
 import numpy as np
 import cv2
+from pathlib import Path 
+
+# === Raiz do projeto e config ===
+ROOT = Path(__file__).resolve().parents[1]            # ...\strawberry-ai
+CONFIG_PATH = ROOT / "config.json"
 
 from server_module import TCPServerHandler, UDPStreamer, CameraServer
 from utils.logger import main_logger, camera_logger, server_logger, ml_logger, log_system_info
 
 def _load_tflite_interpreter(model_path: str):
+    import os
+
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Modelo TFLite não encontrado: {model_path}")
+
+    # Escolhe dinamicamente o backend correto do TFLite
+    Interpreter = None
+    last_err = None
+
+    # 1) TensorFlow completo (caminho suportado nas versões recentes)
     try:
-        from tflite_runtime.interpreter import Interpreter
-        ml_logger.info("Usando tflite_runtime")
-    except ImportError:
-        from tensorflow.lite import Interpreter
-        ml_logger.info("Usando tensorflow.lite (fallback)")
-    
+        from tensorflow.lite.python.interpreter import Interpreter as TFInterpreter  # type: ignore
+        Interpreter = TFInterpreter
+        ml_logger.info("Backend TFLite: tensorflow.lite.python.interpreter")
+    except Exception as e_tf:
+        last_err = e_tf
+        # 2) Fallback para tflite-runtime (pode não existir no Windows)
+        try:
+            from tflite_runtime.interpreter import Interpreter as RTInterpreter  # type: ignore
+            Interpreter = RTInterpreter
+            ml_logger.info("Backend TFLite: tflite_runtime.interpreter (fallback)")
+        except Exception as e_rt:
+            raise ImportError(
+                "Nenhum backend TFLite disponível. Instale TensorFlow (>=2.14) "
+                "ou tflite-runtime compatível com seu SO/Python."
+            ) from (last_err or e_rt)
+
+    # Instancia e aloca tensores
     interpreter = Interpreter(model_path=model_path)
     interpreter.allocate_tensors()
     ml_logger.info(f"Modelo TFLite carregado: {model_path}")
+    ml_logger.info(f"Interpreter módulo: {interpreter.__class__.__module__}")
     return interpreter
+
 
 def _softmax(x: np.ndarray) -> np.ndarray:
     x = x.astype(np.float32)
@@ -113,7 +139,10 @@ def main():
 
     # Configuração ML
     ml_cfg = CONFIG.get("ml", {})
-    tflite_path = ml_cfg.get("model_path", "MorganaAI.tflite")
+    tflite_rel = ml_cfg.get("model_path", "backend/morganaAI/MorganaAI.tflite")
+    tflite_path = str((ROOT / tflite_rel).resolve())
+    print(f"Tentando carregar modelo em: {tflite_path}")
+
     labels = ml_cfg.get("labels", [])
     input_norm = ml_cfg.get("input_norm", "auto")
 

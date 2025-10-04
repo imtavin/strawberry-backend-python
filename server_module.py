@@ -131,13 +131,14 @@ class TCPServerHandler:
             
     def send_text(self, text: str):
         if not self.enabled or not self.conn:
+            tcp_logger.info(f"Self not enable {self.enabled} or not conn {self.conn}")
             return False
             
         try:
             if not text.endswith("\n"):
                 text = text + "\n"
             self.conn.sendall(text.encode("utf-8", errors="ignore"))
-            tcp_logger.debug(f"Texto enviado para cliente: {text.strip()}")
+            tcp_logger.info(f"Texto enviado para cliente: {text.strip()}")
             return True
         except Exception as e:
             tcp_logger.error(f"Falha ao enviar resposta: {e}")
