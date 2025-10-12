@@ -84,6 +84,7 @@ server_logger = setup_logger("strawberry.server")
 ml_logger = setup_logger("strawberry.ml")
 udp_logger = setup_logger("strawberry.udp")
 tcp_logger = setup_logger("strawberry.tcp")
+system_logger = setup_logger("strawberry.system")
 
 def log_system_info():
     """Log de informações do sistema"""

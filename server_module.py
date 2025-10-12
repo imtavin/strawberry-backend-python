@@ -7,6 +7,7 @@ import queue
 from typing import Optional
 import netifaces
 import json
+import requests
 from utils.logger import server_logger, tcp_logger, udp_logger
 
 # ======================
@@ -32,10 +33,14 @@ class TCPServerHandler:
             self.server.bind((self.config["host"], self.config["port"]))
             self.server.listen(1)
 
-            # Obter apenas o IP principal da Raspberry
-            self.raspberry_ip = self._get_raspberry_ip()
-            tcp_logger.info(f"IP da Raspberry detectado: {self.raspberry_ip}")
+             # Obter IPs da Raspberry
+            self.private_ip = self._get_private_ip()
+            self.public_ip = self._get_public_ip()
             
+            # raspberry_ip aponta para private_ip
+            self.raspberry_ip = self.private_ip
+            
+            tcp_logger.info(f"IPs da Raspberry - Privado: {self.private_ip}, Público: {self.public_ip}")
             tcp_logger.info(f"Servidor TCP aguardando conexão em {self.config['host']}:{self.config['port']}")
 
             # Aceita o primeiro cliente
@@ -46,6 +51,66 @@ class TCPServerHandler:
         except Exception as e:
             tcp_logger.error(f"Erro ao inicializar servidor TCP: {e}")
             raise
+
+    def _get_private_ip(self):
+        """Obtém o IP privado da Raspberry (prioriza eth0, depois wlan0)"""
+        try:
+            interfaces = ['eth0', 'wlan0']
+            
+            for interface in interfaces:
+                try:
+                    addrs = netifaces.ifaddresses(interface)
+                    if netifaces.AF_INET in addrs:
+                        ip = addrs[netifaces.AF_INET][0]['addr']
+                        if ip and not ip.startswith('127.'):
+                            return ip
+                except (KeyError, ValueError):
+                    continue
+            
+            # Fallback: IP do hostname
+            hostname = socket.gethostname()
+            local_ip = socket.gethostbyname(hostname)
+            if not local_ip.startswith('127.'):
+                return local_ip
+                
+            # Último fallback: IP da conexão ativa
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(("8.8.8.8", 80))
+                return s.getsockname()[0]
+                
+        except Exception as e:
+            tcp_logger.error(f"Erro ao obter IP privado: {e}")
+            return "Indisponível"
+
+    def _get_public_ip(self):
+        """Obtém o IP público da Raspberry"""
+        try:
+            response = requests.get('https://api.ipify.org', timeout=10)
+            if response.status_code == 200:
+                return response.text.strip()
+        except Exception as e:
+            tcp_logger.warning(f"Erro ao obter IP público: {e}")
+            
+        return "Indisponível"
+
+    def _send_raspberry_info(self):
+        """Envia informações da Raspberry para o frontend conectado"""
+        try:
+            raspberry_info = {
+                "type": "raspberry_info",
+                "private_ip": self.private_ip,
+                "public_ip": self.public_ip,
+                "ip": self.private_ip, 
+                "hostname": socket.gethostname(),
+                "timestamp": time.time()
+            }
+            message = json.dumps(raspberry_info) + "\n"
+            self.conn.sendall(message.encode("utf-8"))
+            tcp_logger.info(f"Informações da Raspberry enviadas - Privado: {self.private_ip}, Público: {self.public_ip}")
+            
+        except Exception as e:
+            tcp_logger.error(f"Erro ao enviar informações da Raspberry: {e}")
+
 
     def _log_throttled(self, level, msg, key=None):
         """Log com throttling para evitar spam"""
@@ -213,7 +278,11 @@ class TCPServerHandler:
             }
             message = json.dumps(raspberry_info) + "\n"
             self.conn.sendall(message.encode("utf-8"))
-            tcp_logger.info(f"Informações da Raspberry enviadas: {self.raspberry_ip}")
+            tcp_logger.info(f"Informações da Raspberry enviadas: IP={self.raspberry_ip}, Hostname={socket.gethostname()}")
+            
+            # Log o conteúdo exato enviado
+            tcp_logger.debug(f"Conteúdo enviado: {message.strip()}")
+            
         except Exception as e:
             tcp_logger.error(f"Erro ao enviar informações da Raspberry: {e}")
 

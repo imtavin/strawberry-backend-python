@@ -6,6 +6,8 @@ import platform
 import numpy as np
 import cv2
 from pathlib import Path 
+from wifi_manager import WiFiManager
+import subprocess
 
 # === Raiz do projeto e config ===
 ROOT = Path(__file__).resolve().parents[1]            # ...\strawberry-ai
@@ -98,6 +100,8 @@ def main():
     except Exception as e:
         main_logger.error(f"Erro ao carregar config.json: {e}")
         return
+    
+    wifi_manager = WiFiManager()
 
     # Detecta transporte desejado para o VÍDEO do frontend
     video_cfg = CONFIG.get("video", {})
@@ -278,6 +282,60 @@ def main():
                     else:
                         ml_logger.warning("Inferência não realizada: modelo não carregado ou frame indisponível")
                         tcp_server.send_text(json.dumps({"label": "capturado", "confidence": 0.0}))
+
+                elif cmd == "GET_INFO":
+                    # Enviar informações da Raspberry
+                    tcp_server._send_raspberry_info()
+                    server_logger.info(" Solicitação de informações da Raspberry atendida")
+
+                elif cmd.startswith("WIFI_CONNECT:"):
+                    # Conectar a rede Wi-Fi
+                    try:
+                        _, ssid, password = cmd.split(":", 2)
+                        server_logger.info(f"Tentando conectar ao Wi-Fi: {ssid}")
+                        
+                        result = wifi_manager.connect_to_wifi(ssid, password)
+                        
+                        if result["success"]:
+                            tcp_server.send_text(f"WIFI:SUCCESS:{result['message']}")
+                            server_logger.info(f" Wi-Fi conectado: {ssid}")
+                        else:
+                            tcp_server.send_text(f"WIFI:FAILED:{result['message']}")
+                            server_logger.error(f" Falha Wi-Fi: {result['message']}")
+                            
+                    except Exception as e:
+                        error_msg = f"Erro no comando Wi-Fi: {e}"
+                        tcp_server.send_text(f"WIFI:ERROR:{error_msg}")
+                        server_logger.error(error_msg)
+
+                elif cmd == "RESTART_SERVICE":
+                    # Reiniciar serviço
+                    server_logger.info("Reiniciando serviço...")
+                    try:
+                        subprocess.run(["sudo", "systemctl", "restart", "strawberry-ai"], check=True)
+                        tcp_server.send_text("SERVICE:RESTARTED")
+                        server_logger.info(" Serviço reiniciado")
+                    except Exception as e:
+                        error_msg = f"Erro ao reiniciar serviço: {e}"
+                        tcp_server.send_text(f"SERVICE:ERROR:{error_msg}")
+                        server_logger.error(error_msg)
+
+                elif cmd == "SHOW_LOGS":
+                    # Mostrar logs
+                    server_logger.info("Solicitação de logs recebida")
+                    try:
+                        # Enviar últimas linhas de log
+                        result = subprocess.run(
+                            ["tail", "-20", "/var/log/strawberry-ai.log"], 
+                            capture_output=True, 
+                            text=True
+                        )
+                        if result.returncode == 0:
+                            tcp_server.send_text(f"LOGS:{result.stdout}")
+                        else:
+                            tcp_server.send_text("LOGS:Erro ao ler logs")
+                    except Exception as e:
+                        tcp_server.send_text(f"LOGS:Erro: {e}")
 
                 else:
                     server_logger.debug(f"Comando não tratado: {cmd}")

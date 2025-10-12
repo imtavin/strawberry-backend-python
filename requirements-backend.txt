@@ -28,3 +28,6 @@ tensorflow==2.15.0 ; sys_platform == "win32"
 colorama==0.4.6
 packaging==25.0
 netifaces==0.11.0
+
+# Wi-Fi e sistema
+requests==2.31.0
