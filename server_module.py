@@ -5,6 +5,8 @@ import errno
 import threading
 import queue
 from typing import Optional
+import netifaces
+import json
 from utils.logger import server_logger, tcp_logger, udp_logger
 
 # ======================
@@ -29,6 +31,10 @@ class TCPServerHandler:
             self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.server.bind((self.config["host"], self.config["port"]))
             self.server.listen(1)
+
+            # Obter apenas o IP principal da Raspberry
+            self.raspberry_ip = self._get_raspberry_ip()
+            tcp_logger.info(f"IP da Raspberry detectado: {self.raspberry_ip}")
             
             tcp_logger.info(f"Servidor TCP aguardando conexão em {self.config['host']}:{self.config['port']}")
 
@@ -144,6 +150,72 @@ class TCPServerHandler:
             tcp_logger.error(f"Falha ao enviar resposta: {e}")
             self.close_conn_only()
             return False
+    
+    def _get_raspberry_ip(self):
+        """Obtém apenas o IP principal da Raspberry (prioriza eth0, depois wlan0)"""
+        try:
+            # Prioridade: eth0 (cabo) -> wlan0 (WiFi) -> fallback
+            interfaces = ['eth0', 'wlan0']
+            
+            for interface in interfaces:
+                try:
+                    addrs = netifaces.ifaddresses(interface)
+                    if netifaces.AF_INET in addrs:
+                        ip = addrs[netifaces.AF_INET][0]['addr']
+                        if ip and not ip.startswith('127.'):
+                            return ip
+                except (KeyError, ValueError):
+                    continue
+            
+            # Fallback: IP do hostname
+            hostname = socket.gethostname()
+            local_ip = socket.gethostbyname(hostname)
+            if not local_ip.startswith('127.'):
+                return local_ip
+                
+            # Último fallback: IP da conexão ativa
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(("8.8.8.8", 80))
+                return s.getsockname()[0]
+                
+        except Exception as e:
+            tcp_logger.error(f"Erro ao obter IP da Raspberry: {e}")
+            return "Indisponível"
+
+    def poll_accept(self):
+        if not self.enabled or not self.server or self.conn is not None:
+            return False
+            
+        self.server.setblocking(False)
+        try:
+            conn, addr = self.server.accept()
+            self.conn, self.addr = conn, addr
+            self.conn.setblocking(False)
+            tcp_logger.info(f"Cliente reconectado: {self.addr[0]}:{self.addr[1]}")
+            
+            # 🔥 NOVO: Enviar IP da Raspberry assim que o frontend conectar
+            self._send_raspberry_info()
+            return True
+        except (BlockingIOError, InterruptedError):
+            return False
+        except OSError as e:
+            self._log_throttled("warn", f"Falha ao aceitar conexão: {e}", key="accept_oserr")
+            return False
+
+    def _send_raspberry_info(self):
+        """Envia informações da Raspberry para o frontend conectado"""
+        try:
+            raspberry_info = {
+                "type": "raspberry_info",
+                "ip": self.raspberry_ip,
+                "hostname": socket.gethostname(),
+                "timestamp": time.time()
+            }
+            message = json.dumps(raspberry_info) + "\n"
+            self.conn.sendall(message.encode("utf-8"))
+            tcp_logger.info(f"Informações da Raspberry enviadas: {self.raspberry_ip}")
+        except Exception as e:
+            tcp_logger.error(f"Erro ao enviar informações da Raspberry: {e}")
 
 
 # ======================

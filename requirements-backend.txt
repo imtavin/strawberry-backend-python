@@ -1,0 +1,30 @@
+# === Backend - Python 3.10 ===
+
+# Web server
+Flask==3.1.0
+flask-cors==5.0.1
+click==8.1.8
+blinker==1.9.0
+itsdangerous==2.2.0
+Jinja2==3.1.6
+MarkupSafe==3.0.2
+Werkzeug==3.1.3
+
+# Logging e sistema
+psutil==5.9.8
+
+# Processamento de imagem
+Pillow==10.4.0
+opencv-python-headless==4.10.0.84
+
+# NumPy estável
+numpy==1.26.4
+
+# ML - TensorFlow Lite (Raspberry) ou TensorFlow completo (Windows)
+tflite-runtime>=2.14.0 ; sys_platform != "win32"
+tensorflow==2.15.0 ; sys_platform == "win32"
+
+# Utilitários
+colorama==0.4.6
+packaging==25.0
+netifaces==0.11.0
