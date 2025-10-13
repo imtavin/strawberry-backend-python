@@ -4,28 +4,28 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 class CustomFormatter(logging.Formatter):
-    """Formatação colorida para console e simples para arquivos"""
+    """Formatação colorida para console"""
     
     # Cores ANSI
-    grey = "\x1b[38;20m"
-    green = "\x1b[32;20m"
-    yellow = "\x1b[33;20m"
-    red = "\x1b[31;20m"
-    bold_red = "\x1b[31;1m"
-    blue = "\x1b[34;20m"
-    reset = "\x1b[0m"
+    GREY = "\x1b[38;20m"
+    GREEN = "\x1b[32;20m"
+    YELLOW = "\x1b[33;20m"
+    RED = "\x1b[31;20m"
+    BOLD_RED = "\x1b[31;1m"
+    BLUE = "\x1b[34;20m"
+    RESET = "\x1b[0m"
     
-    # Formatos
-    format_str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     
     FORMATS = {
-        logging.DEBUG: grey + format_str + reset,
-        logging.INFO: green + format_str + reset,
-        logging.WARNING: yellow + format_str + reset,
-        logging.ERROR: red + format_str + reset,
-        logging.CRITICAL: bold_red + format_str + reset
+        logging.DEBUG: GREY + FORMAT + RESET,
+        logging.INFO: GREEN + FORMAT + RESET,
+        logging.WARNING: YELLOW + FORMAT + RESET,
+        logging.ERROR: RED + FORMAT + RESET,
+        logging.CRITICAL: BOLD_RED + FORMAT + RESET
     }
     
     def format(self, record):
@@ -33,16 +33,23 @@ class CustomFormatter(logging.Formatter):
         formatter = logging.Formatter(log_fmt, datefmt='%Y-%m-%d %H:%M:%S')
         return formatter.format(record)
 
-def setup_logger(name, log_level=logging.INFO, log_to_file=True):
-    """Configura um logger com console e arquivo"""
+def setup_logger(
+    name: str, 
+    log_level: int = logging.INFO, 
+    log_to_file: bool = True,
+    max_bytes: int = 10 * 1024 * 1024,  # 10MB
+    backup_count: int = 5
+) -> logging.Logger:
+    """Configura logger com console e arquivo"""
     
-    # Criar logger
     logger = logging.getLogger(name)
-    logger.setLevel(log_level)
     
-    # Evitar logs duplicados
+    # Evitar configuração duplicada
     if logger.handlers:
         return logger
+        
+    logger.setLevel(log_level)
+    logger.propagate = False
     
     # Formatter para arquivo (sem cores)
     file_formatter = logging.Formatter(
@@ -58,20 +65,18 @@ def setup_logger(name, log_level=logging.INFO, log_to_file=True):
     
     # Handler para arquivo
     if log_to_file:
-        # Criar diretório de logs se não existir
         log_dir = Path("logs")
         log_dir.mkdir(exist_ok=True)
         
-        # Arquivo com data
         log_file = log_dir / f"strawberry_ai_{datetime.now().strftime('%Y%m%d')}.log"
         
         file_handler = logging.handlers.RotatingFileHandler(
             log_file,
-            maxBytes=10*1024*1024,  # 10MB
-            backupCount=5,
+            maxBytes=max_bytes,
+            backupCount=backup_count,
             encoding='utf-8'
         )
-        file_handler.setLevel(logging.DEBUG)  # Arquivo guarda tudo
+        file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(file_formatter)
         logger.addHandler(file_handler)
     
@@ -86,15 +91,26 @@ udp_logger = setup_logger("strawberry.udp")
 tcp_logger = setup_logger("strawberry.tcp")
 system_logger = setup_logger("strawberry.system")
 
-def log_system_info():
-    """Log de informações do sistema"""
+def log_system_info() -> None:
+    """Log de informações do sistema de forma otimizada"""
     import platform
     import psutil
     
-    main_logger.info("=" * 50)
-    main_logger.info("🚀 Strawberry AI Iniciando")
-    main_logger.info(f"📋 Sistema: {platform.system()} {platform.release()}")
-    main_logger.info(f"🐍 Python: {platform.python_version()}")
-    main_logger.info(f"💾 RAM: {psutil.virtual_memory().total / (1024**3):.1f} GB")
-    main_logger.info(f"💿 Disk: {psutil.disk_usage('/').free / (1024**3):.1f} GB livre")
-    main_logger.info("=" * 50)
+    try:
+        system_info = {
+            "Sistema": f"{platform.system()} {platform.release()}",
+            "Python": platform.python_version(),
+            "Processador": platform.processor() or "N/A",
+            "RAM Total": f"{psutil.virtual_memory().total / (1024**3):.1f} GB",
+            "RAM Livre": f"{psutil.virtual_memory().available / (1024**3):.1f} GB",
+            "Disco Livre": f"{psutil.disk_usage('/').free / (1024**3):.1f} GB"
+        }
+        
+        main_logger.info("=" * 60)
+        main_logger.info("🚀 Strawberry AI Iniciando - Informações do Sistema")
+        for key, value in system_info.items():
+            main_logger.info(f"📋 {key}: {value}")
+        main_logger.info("=" * 60)
+        
+    except Exception as e:
+        main_logger.warning(f"Erro ao obter informações do sistema: {e}")
