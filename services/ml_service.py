@@ -1,8 +1,10 @@
 import numpy as np
 import cv2
+import json
 from typing import Dict, Any, Optional, Tuple
 from utils.logger import ml_logger
 from utils.type_helpers import convert_numpy_types, ensure_python_types
+
 
 class MLService:
     def __init__(self, config_manager):
@@ -11,9 +13,15 @@ class MLService:
         self.input_details = None
         self.output_details = None
         self.labels = []
+        self.translations = {}  # ✅ Traduções para português
+        self.default_label = "Não identificado"  # ✅ Fallback
+        self.confidence_threshold = 0.6  # ✅ Limiar padrão (60%)
         self._initialize_model()
         ensure_python_types = convert_numpy_types
-    
+
+    # =====================================================
+    # =============== INICIALIZAÇÃO DO MODELO ==============
+    # =====================================================
     def _initialize_model(self) -> None:
         """Inicializa o modelo TFLite de forma otimizada"""
         try:
@@ -22,20 +30,41 @@ class MLService:
             self.input_details = self.interpreter.get_input_details()
             self.output_details = self.interpreter.get_output_details()
             self.labels = self.config.get('ml.labels', [])
-            
+            self._load_label_translations()  # ✅ Carrega traduções e fallback
+
+            # ✅ Lê threshold configurável do config.json (se existir)
+            self.confidence_threshold = self.config.get("ml.confidence_threshold", 0.6)
+
             ml_logger.info(
                 f"Modelo carregado: shape={self.input_details[0]['shape']}, "
-                f"labels={len(self.labels)}"
+                f"labels={len(self.labels)}, threshold={self.confidence_threshold}"
             )
         except Exception as e:
             ml_logger.error(f"Falha ao carregar modelo: {e}")
             self.interpreter = None
-    
+
+    # =====================================================
+    # ================= TRADUÇÕES E CONFIG =================
+    # =====================================================
+    def _load_label_translations(self):
+        """Carrega traduções e fallback do config.json"""
+        try:
+            self.translations = self.config.get("ml.translations", {})
+            self.default_label = self.config.get("ml.default_label", "Não identificado")
+            ml_logger.info(f"Traduções carregadas ({len(self.translations)} mapeamentos)")
+        except Exception as e:
+            ml_logger.error(f"Falha ao carregar traduções: {e}")
+            self.translations = {}
+            self.default_label = "Não identificado"
+
+    # =====================================================
+    # ==================== UTILITÁRIOS =====================
+    # =====================================================
     def _resolve_model_path(self) -> str:
         """Resolve o caminho absoluto do modelo"""
         model_rel_path = self.config.get('ml.model_path', 'backend/morganaAI/MorganaAI.tflite')
         return str((self.config.root_dir / model_rel_path).resolve())
-    
+
     def _load_interpreter(self, model_path: str):
         """Carrega interpreter TFLite com fallback otimizado"""
         try:
@@ -51,87 +80,107 @@ class MLService:
                 raise ImportError(
                     "Nenhum backend TFLite disponível. Instale TensorFlow ou tflite-runtime"
                 ) from e
-        
+
         interpreter.allocate_tensors()
         return interpreter
-    
+
     def _softmax(self, x: np.ndarray) -> np.ndarray:
         """Calcula softmax numericamente estável"""
         x = x.astype(np.float32)
         x = x - np.max(x)  # Para estabilidade numérica
         exp_x = np.exp(x)
         return exp_x / np.sum(exp_x)
-    
+
+    # =====================================================
+    # ==================== PRÉ-PROCESSO ====================
+    # =====================================================
     def preprocess_frame(self, frame: np.ndarray) -> np.ndarray:
         """Pré-processa frame para inferência de forma otimizada"""
         if self.input_details is None:
             raise RuntimeError("Modelo não inicializado")
-        
+
         input_detail = self.input_details[0]
         h, w = input_detail['shape'][1:3]
-        
+
         # Redimensiona e converte cor em uma única operação
         resized = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
-        
+
         if input_detail['dtype'] == np.uint8:
             tensor = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.uint8)
         else:
             tensor = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-        
+
         return np.expand_dims(tensor, axis=0)
-    
+
+    # =====================================================
+    # ==================== INFERÊNCIA ======================
+    # =====================================================
     def infer(self, frame: np.ndarray) -> Optional[Dict[str, Any]]:
         """Executa inferência no frame"""
         if self.interpreter is None:
             return None
-        
+
         try:
             # Pré-processamento
             input_tensor = self.preprocess_frame(frame)
-            
+
             # Inferência
             self.interpreter.set_tensor(self.input_details[0]['index'], input_tensor)
             self.interpreter.invoke()
             output = self.interpreter.get_tensor(self.output_details[0]['index'])
-            
+
             # Pós-processamento
             probabilities = self._postprocess_output(np.squeeze(output))
             class_idx = np.argmax(probabilities)
             confidence = float(probabilities[class_idx])
-            
-            # Resultado com conversão segura de tipos
+
+            # Nome técnico da classe
             label = (
-                self.labels[class_idx] 
-                if 0 <= class_idx < len(self.labels) 
+                self.labels[class_idx]
+                if 0 <= class_idx < len(self.labels)
                 else f"class_{class_idx}"
             )
-            
-            # Estrutura do resultado
+
+            # ================== LIMIAR DE CONFIANÇA ==================
+            # Se confiança for muito baixa, assume "Não identificado"
+            if confidence < self.confidence_threshold:
+                label = "unknown"
+                translated_label = self.default_label
+            else:
+                translated_label = self.translations.get(label, self.default_label)
+
+            # Resultado estruturado
             result = {
-                "label": label,
+                "label": label,  # nome técnico (ex: gray_mold)
+                "label_pt": translated_label,  # nome legível (ex: Mofo Cinzento)
                 "confidence": round(confidence * 100.0, 2),
                 "class_index": class_idx
             }
-            
-            # CONVERSÃO SEGURA PARA TIPOS PYTHON
+
+            # Conversão segura
             safe_result = ensure_python_types(result)
-            
-            ml_logger.info(f" Inferência concluída: {safe_result}")
+
+            ml_logger.info(f"Inferência concluída: {safe_result}")
             return safe_result
-            
+
         except Exception as e:
-            ml_logger.error(f" Erro na inferência: {e}")
+            ml_logger.error(f"Erro na inferência: {e}")
         return None
-    
+
+    # =====================================================
+    # ==================== PÓS-PROCESSO ====================
+    # =====================================================
     def _postprocess_output(self, output: np.ndarray) -> np.ndarray:
         """Aplica pós-processamento na saída do modelo"""
         if np.max(output) > 1.0 or np.min(output) < 0.0:
             return self._softmax(output)
         else:
-            # Normaliza se já estiver em [0,1]
             sum_output = np.sum(output)
             return output / sum_output if sum_output > 0 else output
 
+    # =====================================================
+    # ================== CONVERSÃO PYTHON ==================
+    # =====================================================
     def _ensure_python_types(self, obj: Any) -> Any:
         """Garante que todos os valores são tipos Python nativos - MÉTODO AUXILIAR"""
         if isinstance(obj, (np.integer)):
