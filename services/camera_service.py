@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import threading
 import time
+import platform
 from typing import Optional, Tuple, Callable
 from utils.logger import camera_logger
 
@@ -22,24 +23,41 @@ class CameraService:
         cam_config = self.config.get_camera_config()
         
         # Determina o tipo de câmera
-        cam_type = cam_config.get('type', 'opencv')  # Default para opencv no Windows
+        if platform.system() == "Linux" and "raspberrypi" in platform.uname().node.lower():
+            cam_type = cam_config.get('type', 'picamera')  # Prioriza libcamera
+        else:
+            cam_type = cam_config.get('type', 'opencv')  # Default para opencv no Windows
         
         camera_logger.info(f"Inicializando câmera do tipo: {cam_type}")
         
         try:
-            if cam_type.lower() == "picamera":
-                # Para Raspberry Pi
-                from camera.pi_camera import PiCamera
-                self.camera_handler = PiCamera(cam_config)
-            else:
-                # Para Windows/OpenCV
-                from camera.opencv_camera import OpenCVCamera
-                self.camera_handler = OpenCVCamera(cam_config)
+            if self._is_raspberry_pi():
+                camera_logger.info("🟡 Raspberry Pi detectada - usando Picamera2 (libcamera)")
                 
-            camera_logger.info(f"Câmera {cam_type} inicializada com sucesso")
+                try:
+                    from camera.pi_camera import PiCameraUnified
+                    self.camera_handler = PiCameraUnified(cam_config)
+                    camera_logger.info("✅ PiCameraUnified inicializada com sucesso")
+                    return
+                    
+                except Exception as e:
+                    camera_logger.error(f"❌ Falha crítica com Picamera2: {e}")
+                    raise RuntimeError(f"Picamera2 é obrigatório no Raspberry Pi: {e}")
+            
+            else:
+                # Para outros sistemas (Windows/Linux não-RPi)
+                try:
+                    from camera.opencv_camera import OpenCVCamera
+                    self.camera_handler = OpenCVCamera(cam_config)
+                    camera_logger.info("✅ OpenCVCamera inicializada (sistema não-RPi)")
+                except Exception as e:
+                    camera_logger.error(f"❌ Falha com OpenCV: {e}")
+                    raise
             
         except Exception as e:
             camera_logger.error(f"Erro ao inicializar câmera {cam_type}: {e}")
+            if "Device or resource busy" in str(e):
+                camera_logger.warning("Outro processo está usando a câmera, tente parar libcamera ou reiniciar Raspberry Pi")
             # Fallback para OpenCV
             try:
                 from camera.opencv_camera import OpenCVCamera
@@ -49,17 +67,34 @@ class CameraService:
                 camera_logger.error(f"Fallback também falhou: {fallback_error}")
                 raise
 
-    def start_streaming(self, callback: Callable) -> None:
-        """Inicia streaming em thread separada - CORRIGIDO"""
+    def _is_raspberry_pi(self) -> bool:
+        """Detecta se está executando em Raspberry Pi"""
+        try:
+            with open('/proc/device-tree/model', 'r') as f:
+                model = f.read()
+                return 'Raspberry Pi' in model
+        except:
+            return False
+        
+    def set_frame_callback(self, callback: Callable) -> None:
+        """Adiciona o método set_frame_callback que estava faltando"""
+        self.stream_callback = callback
+        camera_logger.info("Callback de frames configurado no CameraService")
+
+    def start_streaming(self, fps: int = 15) -> None:
+        """Método sobrecarregado para compatibilidade - inicia streaming com FPS"""
         if self.is_streaming:
             camera_logger.warning("Streaming já está em execução")
             return
         
-        self.stream_callback = callback
+        if not self.stream_callback:
+            camera_logger.error("Nenhum callback definido. Chame set_frame_callback primeiro.")
+            return
+        
         self.is_streaming = True
         
         # Configurações de performance
-        target_fps = self.config.get('camera.target_fps', 15)
+        target_fps = fps
         frame_delay = 1.0 / max(1.0, target_fps)
         
         camera_logger.info(f"Iniciando streaming com {target_fps} FPS")
@@ -85,6 +120,10 @@ class CameraService:
                         
                         frame_count += 1
                         consecutive_errors = 0  # Reset error counter
+                        
+                        # Log do primeiro frame
+                        if frame_count == 1:
+                            camera_logger.info(f"Primeiro frame capturado: {len(frame_bytes)} bytes")
                         
                         # Log a cada 30 frames para não poluir
                         if frame_count % 30 == 0:
@@ -117,6 +156,11 @@ class CameraService:
         self._stream_thread.start()
         
         camera_logger.info("Streaming de câmera iniciado")
+
+    def start_streaming_with_callback(self, callback: Callable) -> None:
+        """CORREÇÃO: Método alternativo para compatibilidade com código antigo"""
+        self.set_frame_callback(callback)
+        self.start_streaming()
 
     def capture_frame(self) -> Tuple[Optional[np.ndarray], Optional[bytes]]:
         """Captura frame de forma otimizada """

@@ -85,6 +85,7 @@ def setup_logger(
 # Loggers específicos para cada módulo
 main_logger = setup_logger("strawberry.main")
 camera_logger = setup_logger("strawberry.camera")
+capture_logger = setup_logger("strawberry.capture")
 server_logger = setup_logger("strawberry.server")
 ml_logger = setup_logger("strawberry.ml")
 udp_logger = setup_logger("strawberry.udp")
