@@ -3,6 +3,7 @@ import numpy as np
 import threading
 import time
 import platform
+import json
 from typing import Optional, Tuple, Callable
 from utils.logger import camera_logger
 
@@ -24,9 +25,9 @@ class CameraService:
         
         # Determina o tipo de câmera
         if platform.system() == "Linux" and "raspberrypi" in platform.uname().node.lower():
-            cam_type = cam_config.get('type', 'picamera')  # Prioriza libcamera
+            cam_type = cam_config.get('type', 'picamera')
         else:
-            cam_type = cam_config.get('type', 'opencv')  # Default para opencv no Windows
+            cam_type = cam_config.get('type', 'opencv')
         
         camera_logger.info(f"Inicializando câmera do tipo: {cam_type}")
         
@@ -67,6 +68,33 @@ class CameraService:
                 camera_logger.error(f"Fallback também falhou: {fallback_error}")
                 raise
 
+    def update_camera_config(self, new_config: dict) -> bool:
+        """Atualiza configuração da câmera dinamicamente"""
+        try:
+            camera_logger.info("🎛️  Atualizando configuração da câmera via serviço...")
+            
+            # Para streaming temporariamente
+            was_streaming = self.is_streaming
+            if was_streaming:
+                self.stop_streaming()
+            
+            # Atualiza handler da câmera
+            if self.camera_handler and hasattr(self.camera_handler, 'update_config'):
+                success = self.camera_handler.update_config(new_config)
+                
+                # Reinicia streaming se estava ativo
+                if was_streaming and success:
+                    self.start_streaming()
+                
+                return success
+            else:
+                camera_logger.warning("Handler de câmera não suporta atualização dinâmica")
+                return False
+                
+        except Exception as e:
+            camera_logger.error(f"❌ Erro ao atualizar configuração: {e}")
+            return False
+
     def _is_raspberry_pi(self) -> bool:
         """Detecta se está executando em Raspberry Pi"""
         try:
@@ -77,12 +105,12 @@ class CameraService:
             return False
         
     def set_frame_callback(self, callback: Callable) -> None:
-        """Adiciona o método set_frame_callback que estava faltando"""
+        """Configura callback para frames"""
         self.stream_callback = callback
         camera_logger.info("Callback de frames configurado no CameraService")
 
     def start_streaming(self, fps: int = 15) -> None:
-        """Método sobrecarregado para compatibilidade - inicia streaming com FPS"""
+        """Inicia streaming com FPS configurável"""
         if self.is_streaming:
             camera_logger.warning("Streaming já está em execução")
             return
@@ -119,7 +147,7 @@ class CameraService:
                             self.stream_callback(frame_bytes)
                         
                         frame_count += 1
-                        consecutive_errors = 0  # Reset error counter
+                        consecutive_errors = 0
                         
                         # Log do primeiro frame
                         if frame_count == 1:
@@ -145,7 +173,7 @@ class CameraService:
                 except Exception as e:
                     consecutive_errors += 1
                     camera_logger.error(f"Erro no stream loop: {e}")
-                    time.sleep(0.5)  # Pausa em caso de erro
+                    time.sleep(0.5)
 
         # Inicia thread de streaming
         self._stream_thread = threading.Thread(
@@ -158,12 +186,19 @@ class CameraService:
         camera_logger.info("Streaming de câmera iniciado")
 
     def start_streaming_with_callback(self, callback: Callable) -> None:
-        """CORREÇÃO: Método alternativo para compatibilidade com código antigo"""
+        """Método alternativo para compatibilidade"""
         self.set_frame_callback(callback)
         self.start_streaming()
 
+    def stop_streaming(self) -> None:
+        """Para o streaming de forma controlada"""
+        self.is_streaming = False
+        if self._stream_thread and self._stream_thread.is_alive():
+            self._stream_thread.join(timeout=2.0)
+            camera_logger.info("Streaming de câmera parado")
+
     def capture_frame(self) -> Tuple[Optional[np.ndarray], Optional[bytes]]:
-        """Captura frame de forma otimizada """
+        """Captura frame de forma otimizada"""
         if self.camera_handler is None:
             return None, None
         
@@ -190,10 +225,8 @@ class CameraService:
             return False
 
     def stop(self) -> None:
-        """Para o serviço de câmera"""
-        self.is_streaming = False
-        if self._stream_thread and self._stream_thread.is_alive():
-            self._stream_thread.join(timeout=2.0)
+        """Para o serviço de câmera completamente"""
+        self.stop_streaming()
         
         if self.camera_handler:
             self.camera_handler.release()

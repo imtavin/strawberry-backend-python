@@ -31,14 +31,29 @@ class PiCameraUnified(BaseCamera):
         self.picam2 = None
         self._initialized = False
         self._capture_lock = threading.Lock()
-        
-        # Configurações otimizadas
-        self.preview_size = tuple(config.get("preview_size", [640, 480]))
-        self.jpeg_quality = config.get("jpeg_quality", 80)
-        self.fps = config.get("target_fps", 15)
-        self.jpeg_params = [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality]
+        self._config_lock = threading.Lock()
+
+        # Configurações com valores padrão
+        self._apply_camera_config(config)
         
         self._initialize_camera()
+
+    def _apply_camera_config(self, config: dict) -> None:
+        """Aplica configurações da câmera"""
+        with self._config_lock:
+            self.preview_size = tuple(config.get("preview_size", [640, 480]))
+            self.jpeg_quality = config.get("jpeg_quality", 80)
+            self.fps = config.get("target_fps", 15)
+            self.rotation = config.get("rotation", 0)
+            self.brightness = config.get("brightness", 0.0)
+            self.contrast = config.get("contrast", 1.0)
+            self.saturation = config.get("saturation", 1.0)
+            self.sharpness = config.get("sharpness", 1.0)
+            self.exposure_mode = config.get("exposure_mode", "auto")
+            self.awb_mode = config.get("awb_mode", "auto")
+            self.meter_mode = config.get("meter_mode", "average")
+            
+            self.jpeg_params = [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality]
 
     def _initialize_camera(self) -> None:
         """Inicialização robusta da câmera com Picamera2"""
@@ -59,7 +74,23 @@ class PiCameraUnified(BaseCamera):
                 # Cria nova instância
                 self.picam2 = Picamera2()
                 
-                # Configuração otimizada para baixa latência
+                # Mapeamento de controles
+                controls_map = {
+                    "auto": controls.AeEnableEnum.Auto,
+                    "normal": controls.AeExposureModeEnum.Normal,
+                    "sports": controls.AeExposureModeEnum.Sports,
+                    "night": controls.AeExposureModeEnum.Night,
+                }
+                
+                awb_map = {
+                    "auto": controls.AwbModeEnum.Auto,
+                    "tungsten": controls.AwbModeEnum.Tungsten,
+                    "fluorescent": controls.AwbModeEnum.Fluorescent,
+                    "daylight": controls.AwbModeEnum.Daylight,
+                    "cloudy": controls.AwbModeEnum.Cloudy,
+                }
+                
+                # Configuração otimizada com parâmetros da configuração
                 preview_config = self.picam2.create_preview_configuration(
                     main={
                         "size": self.preview_size,
@@ -67,13 +98,22 @@ class PiCameraUnified(BaseCamera):
                     },
                     controls={
                         "FrameRate": self.fps,
-                        "AwbMode": controls.AwbModeEnum.Auto,
+                        "AwbMode": awb_map.get(self.awb_mode, controls.AwbModeEnum.Auto),
                         "AeEnable": True,
+                        "Brightness": self.brightness,
+                        "Contrast": self.contrast,
+                        "Saturation": self.saturation,
+                        "Sharpness": self.sharpness,
                         "ExposureTime": 10000,
                     }
                 )
                 
                 self.picam2.configure(preview_config)
+
+                # Aplica rotação se necessário
+                if self.rotation in [90, 180, 270]:
+                    self.picam2.rotation = self.rotation
+
                 self.picam2.start()
                 
                 # Aguarda aquecimento da câmera
@@ -84,6 +124,7 @@ class PiCameraUnified(BaseCamera):
                 if test_frame is not None and test_frame.size > 0:
                     self._initialized = True
                     camera_logger.info(f"✅ Câmera CSI inicializada com sucesso! Resolução: {test_frame.shape[1]}x{test_frame.shape[0]}")
+                    camera_logger.info(f"📋 Configuração: FPS={self.fps}, Qualidade={self.jpeg_quality}%, Rotação={self.rotation}°")
                     return
                 else:
                     raise RuntimeError("Frame de teste vazio")
@@ -95,6 +136,30 @@ class PiCameraUnified(BaseCamera):
                     time.sleep(retry_delay)
                 else:
                     raise RuntimeError(f"Falha após {max_retries} tentativas: {e}")
+
+
+    def update_config(self, new_config: dict) -> bool:
+        """Atualiza configuração da câmera dinamicamente"""
+        try:
+            camera_logger.info("🔄 Atualizando configuração da câmera...")
+            
+            # Aplica novas configurações
+            self._apply_camera_config(new_config)
+            
+            # Reinicializa câmera com novas configurações
+            self._initialized = False
+            if self.picam2:
+                self.picam2.stop()
+                self.picam2.close()
+                self.picam2 = None
+            
+            self._initialize_camera()
+            camera_logger.info("✅ Configuração da câmera atualizada com sucesso")
+            return True
+            
+        except Exception as e:
+            camera_logger.error(f"❌ Erro ao atualizar configuração: {e}")
+            return False
 
     def capture_frame(self) -> Tuple[Optional[np.ndarray], Optional[bytes]]:
         """Captura frame de forma thread-safe e otimizada"""
@@ -163,6 +228,8 @@ class PiCameraUnified(BaseCamera):
             "camera_type": "picamera2_unified",
             "initialized": self._initialized,
             "preview_size": self.preview_size,
-            "fps": self.fps
+            "fps": self.fps,
+            "jpeg_quality": self.jpeg_quality,
+            "rotation": self.rotation
         })
         return stats

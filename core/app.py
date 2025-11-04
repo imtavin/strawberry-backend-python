@@ -180,6 +180,7 @@ class StrawberryAIApp:
             'WIFI_CONNECT': self._handle_wifi_connect,
             'RESTART_SERVICE': self._handle_restart_service,
             'SHOW_LOGS': self._handle_show_logs,
+            'UPDATE_CAMERA_CONFIG': self._handle_update_camera_config,
         }
         
         # Encontra o handler apropriado
@@ -357,6 +358,93 @@ class StrawberryAIApp:
             error_msg = f"SERVICE:ERROR:{e}"
             self.tcp_server.send_text(error_msg)
             main_logger.error(f"Erro ao reiniciar serviço: {e}")
+
+    def _handle_update_camera_config(self, command: str, client_addr: tuple) -> None:
+        """Handler para atualizar configuração da câmera via frontend"""
+        try:
+            main_logger.info("🎛️  Recebendo comando para atualizar configuração da câmera")
+            
+            # Extrai JSON da configuração
+            config_str = command.split(':', 1)[1]
+            camera_updates = json.loads(config_str)
+            
+            main_logger.info(f"📋 Configurações recebidas: {list(camera_updates.keys())}")
+            
+            # Valida configurações
+            valid_settings = [
+                'preview_size', 'target_fps', 'jpeg_quality', 'rotation',
+                'brightness', 'contrast', 'saturation', 'sharpness',
+                'exposure_mode', 'awb_mode', 'meter_mode'
+            ]
+            
+            filtered_updates = {}
+            for key, value in camera_updates.items():
+                if key in valid_settings:
+                    filtered_updates[key] = value
+                else:
+                    main_logger.warning(f"Configuração inválida ignorada: {key}")
+            
+            if not filtered_updates:
+                error_msg = "Nenhuma configuração válida fornecida"
+                main_logger.error(error_msg)
+                if self.tcp_server:
+                    self.tcp_server.send_text(json.dumps({
+                        "status": "error", 
+                        "message": error_msg
+                    }))
+                return
+            
+            # Atualiza configuração global
+            success = self.config.update_camera_config(filtered_updates)
+            
+            if success:
+                # Aplica configuração na câmera em tempo real
+                if self.camera_service:
+                    camera_success = self.camera_service.update_camera_config(filtered_updates)
+                    
+                    if camera_success:
+                        response = json.dumps({
+                            "status": "success", 
+                            "message": "Configuração da câmera atualizada com sucesso",
+                            "applied_settings": list(filtered_updates.keys())
+                        })
+                        main_logger.info("✅ Configuração da câmera aplicada com sucesso")
+                    else:
+                        response = json.dumps({
+                            "status": "warning", 
+                            "message": "Configuração salva mas não aplicada na câmera"
+                        })
+                else:
+                    response = json.dumps({
+                        "status": "success", 
+                        "message": "Configuração salva, será aplicada na próxima inicialização"
+                    })
+            else:
+                response = json.dumps({
+                    "status": "error", 
+                    "message": "Falha ao salvar configuração"
+                })
+        
+            # Envia resposta
+            if self.tcp_server:
+                self.tcp_server.send_text(response)
+                
+        except json.JSONDecodeError as e:
+            error_msg = f"JSON inválido: {e}"
+            main_logger.error(error_msg)
+            if self.tcp_server:
+                self.tcp_server.send_text(json.dumps({
+                    "status": "error", 
+                    "message": error_msg
+                }))
+        except Exception as e:
+            error_msg = f"Erro ao processar configuração: {e}"
+            main_logger.error(error_msg)
+            if self.tcp_server:
+                self.tcp_server.send_text(json.dumps({
+                    "status": "error", 
+                    "message": error_msg
+                }))
 
     def _handle_show_logs(self, command: str, client_addr: tuple) -> None:
         """Handler para mostrar logs"""
