@@ -4,7 +4,8 @@ import json
 from typing import Dict, Any, Optional, Tuple
 from utils.logger import ml_logger
 from utils.type_helpers import convert_numpy_types, ensure_python_types
-
+import os
+from pathlib import Path
 
 class MLService:
     def __init__(self, config_manager):
@@ -61,9 +62,17 @@ class MLService:
     # ==================== UTILITÁRIOS =====================
     # =====================================================
     def _resolve_model_path(self) -> str:
-        """Resolve o caminho absoluto do modelo"""
-        model_rel_path = self.config.get('ml.model_path', 'backend/morganaAI/MorganaAI.tflite')
-        return str((self.config.root_dir / model_rel_path).resolve())
+        """Resolve caminho absoluto do modelo dentro do backend"""
+        # Caminho base do backend (subindo dois níveis a partir de services/)
+        backend_root = Path(__file__).resolve().parent.parent
+        model_rel_path = self.config.get('ml.model_path', 'morganaAI/MorganaAI.tflite')
+        model_abs_path = backend_root / model_rel_path
+
+        if not model_abs_path.exists():
+            raise FileNotFoundError(f"Modelo não encontrado em: {model_abs_path}")
+
+        return str(model_abs_path)
+
 
     def _load_interpreter(self, model_path: str):
         """Carrega interpreter TFLite com fallback otimizado"""
@@ -156,11 +165,14 @@ class MLService:
                 "confidence": round(confidence * 100.0, 2),
                 "class_index": class_idx
             }
-
+                
             # Conversão segura
             safe_result = ensure_python_types(result)
 
             ml_logger.info(f"Inferência concluída: {safe_result}")
+            ml_logger.info(f"[DEBUG] Label retornada pelo modelo: '{label}'")
+            ml_logger.info(f"[DEBUG] Tradução encontrada: '{self.translations.get(label)}'")
+
             return safe_result
 
         except Exception as e:
