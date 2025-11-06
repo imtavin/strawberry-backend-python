@@ -6,6 +6,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+class FileFormatter(logging.Formatter):
+    def formatTime(self, record, datefmt=None):
+        from datetime import datetime
+        ct = datetime.fromtimestamp(record.created)
+        if datefmt:
+            s = ct.strftime(datefmt.replace('%f', f"{ct.microsecond // 1000:03d}"))
+        else:
+            s = ct.strftime("%Y-%m-%d %H:%M:%S") + f".{ct.microsecond // 1000:03d}"
+        return s
 class CustomFormatter(logging.Formatter):
     """Formatação colorida para console"""
     
@@ -28,9 +37,20 @@ class CustomFormatter(logging.Formatter):
         logging.CRITICAL: BOLD_RED + FORMAT + RESET
     }
     
+    def formatTime(self, record, datefmt=None):
+        """Formata o tempo com precisão em milissegundos"""
+        from datetime import datetime
+        ct = datetime.fromtimestamp(record.created)
+        if datefmt:
+            s = ct.strftime(datefmt.replace('%f', f"{ct.microsecond // 1000:03d}"))
+        else:
+            s = ct.strftime("%Y-%m-%d %H:%M:%S") + f".{ct.microsecond // 1000:03d}"
+        return s
+
     def format(self, record):
         log_fmt = self.FORMATS.get(record.levelno)
-        formatter = logging.Formatter(log_fmt, datefmt='%Y-%m-%d %H:%M:%S')
+        formatter = logging.Formatter(log_fmt, datefmt='%Y-%m-%d %H:%M:%S.%f')
+        formatter.formatTime = self.formatTime  # aplica customização
         return formatter.format(record)
 
 def setup_logger(
@@ -51,11 +71,10 @@ def setup_logger(
     logger.setLevel(log_level)
     logger.propagate = False
     
-    # Formatter para arquivo (sem cores)
-    file_formatter = logging.Formatter(
+    file_formatter = FileFormatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
+        datefmt='%Y-%m-%d %H:%M:%S.%f'
+    )    
     
     # Handler para console
     console_handler = logging.StreamHandler(sys.stdout)
