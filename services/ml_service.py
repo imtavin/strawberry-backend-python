@@ -36,12 +36,18 @@ class MLService:
             # ✅ Lê threshold configurável do config.json (se existir)
             self.confidence_threshold = self.config.get("ml.confidence_threshold", 0.6)
 
+            # Obtém o tamanho REAL do modelo
+            input_shape = self.input_details[0]['shape']
+            self.target_size = (input_shape[1], input_shape[2])  # (height, width)
+            
             ml_logger.info(
-                f"Modelo carregado: shape={self.input_details[0]['shape']}, "
-                f"labels={len(self.labels)}, threshold={self.confidence_threshold}"
+                f"✅ Modelo carregado: shape={input_shape}, "
+                f"tamanho_entrada={self.target_size}, "
+                f"labels={len(self.labels)}"
             )
+            
         except Exception as e:
-            ml_logger.error(f"Falha ao carregar modelo: {e}")
+            ml_logger.error(f"❌ Falha ao carregar modelo: {e}")
             self.interpreter = None
 
     # =====================================================
@@ -95,29 +101,56 @@ class MLService:
 
     def _softmax(self, x: np.ndarray) -> np.ndarray:
         """Calcula softmax numericamente estável"""
-        x = x.astype(np.float32)
+        x = x.astype(np.float64)
         x = x - np.max(x)  # Para estabilidade numérica
         exp_x = np.exp(x)
         return exp_x / np.sum(exp_x)
+
+    def _aplicar_filtros_treinamento(self, img: np.ndarray) -> np.ndarray:
+        """
+        Aplica os MESMOS filtros usados no treinamento
+        """
+        try:
+            # 1. CLAHE (igual ao seu código de treino)
+            lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+            l, a, b = cv2.split(lab)
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+            l = clahe.apply(l)
+            lab = cv2.merge((l, a, b))
+            img = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+            
+            # 2. Sharpen (igual ao seu código de treino)
+            kernel = np.array([[0,-1,0], [-1,5,-1], [0,-1,0]])
+            img = cv2.filter2D(img, -1, kernel)
+            
+        except Exception as e:
+            ml_logger.warning(f"⚠️ Erro ao aplicar filtros: {e}")
+        
+        return img
 
     # =====================================================
     # ==================== PRÉ-PROCESSO ====================
     # =====================================================
     def preprocess_frame(self, frame: np.ndarray) -> np.ndarray:
-        """Pré-processa frame para inferência de forma otimizada"""
+        """Pré-processa frame para inferência de forma consistente com o treino"""
         if self.input_details is None:
-            raise RuntimeError("Modelo não inicializado")
+            raise RuntimeError("❌ Modelo não inicializado")
+
+        # Usa o tamanho REAL do modelo
+        h, w = self.target_size
+
+        # Redimensiona para o tamanho EXATO do treinamento
+        resized = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
+        
+        # Aplica os mesmos filtros do treinamento
+        processed = self._aplicar_filtros_treinamento(resized)
 
         input_detail = self.input_details[0]
-        h, w = input_detail['shape'][1:3]
-
-        # Redimensiona e converte cor em uma única operação
-        resized = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
-
+        
         if input_detail['dtype'] == np.uint8:
-            tensor = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.uint8)
+            tensor = cv2.cvtColor(processed, cv2.COLOR_BGR2RGB).astype(np.uint8)
         else:
-            tensor = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+            tensor = cv2.cvtColor(processed, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
 
         return np.expand_dims(tensor, axis=0)
 
@@ -127,6 +160,7 @@ class MLService:
     def infer(self, frame: np.ndarray) -> Optional[Dict[str, Any]]:
         """Executa inferência no frame"""
         if self.interpreter is None:
+            ml_logger.error("Interpreter não inicializado")
             return None
 
         try:
@@ -184,11 +218,19 @@ class MLService:
     # =====================================================
     def _postprocess_output(self, output: np.ndarray) -> np.ndarray:
         """Aplica pós-processamento na saída do modelo"""
-        if np.max(output) > 1.0 or np.min(output) < 0.0:
+        try:
+            output_sum = np.sum(output)
+            
+            # Se já está normalizado, retorna direto
+            if 0.99 <= output_sum <= 1.01 and np.min(output) >= 0 and np.max(output) <= 1:
+                return output
+            
+            # Caso contrário, aplica softmax
             return self._softmax(output)
-        else:
-            sum_output = np.sum(output)
-            return output / sum_output if sum_output > 0 else output
+            
+        except Exception as e:
+            ml_logger.error(f"❌ Erro no pós-processamento: {e}")
+            return output
 
     # =====================================================
     # ================== CONVERSÃO PYTHON ==================
