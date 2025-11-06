@@ -133,10 +133,14 @@ class SystemCommandHandler:
                 return True, "Logs obtidos com sucesso", {
                     "logs": result["logs"],
                     "source": result.get("source"),
-                    "lines": result.get("lines", 0)
+                    "lines": result.get("lines", 0),
+                    "platform": result.get("platform", "unknown")
                 }
             else:
-                return False, result["message"], {"error_code": result.get("error_code")}
+                return False, result["message"], {
+                    "error_code": result.get("error_code"),
+                    "platform": result.get("platform", "unknown")
+                }
                 
         except Exception as e:
             error_msg = f"Erro obtendo logs: {str(e)}"
