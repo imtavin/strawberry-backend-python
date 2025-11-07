@@ -17,6 +17,7 @@ class SystemCommandHandler:
             'RESTART_SERVICE': self._handle_restart_service,
             'SHOW_LOGS': self._handle_show_logs,
             'GET_SYSTEM_INFO': self._handle_system_info,
+            'SHUTDOWN_SYSTEM': self._handle_shutdown_system,
         }
 
     def handle_command(self, command: str, tcp_server) -> bool:
@@ -117,29 +118,38 @@ class SystemCommandHandler:
             return False, error_msg, None
 
     def _handle_show_logs(self, parts: list) -> Tuple[bool, str, Optional[Dict]]:
-        """Handler para visualizar logs"""
+        """Handler para visualizar logs - VERSÃO ATUALIZADA"""
         try:
             lines = 50
+            log_type = "all"  # Valor padrão
+            
+            # Parse dos parâmetros: SHOW_LOGS:command_id:lines:log_type
             if len(parts) > 2:
                 try:
                     lines = int(parts[2])
                 except ValueError:
                     pass
             
-            main_logger.info(f"Obtendo logs ({lines} linhas)...")
-            result = self.service_manager.get_service_logs(lines)
+            # Novo parâmetro: log_type
+            if len(parts) > 3:
+                log_type = parts[3]
+            
+            main_logger.info(f"Obtendo logs ({lines} linhas, tipo: {log_type})...")
+            result = self.service_manager.get_service_logs(lines=lines, log_type=log_type)
             
             if result["success"]:
                 return True, "Logs obtidos com sucesso", {
                     "logs": result["logs"],
                     "source": result.get("source"),
                     "lines": result.get("lines", 0),
-                    "platform": result.get("platform", "unknown")
+                    "platform": result.get("platform", "unknown"),
+                    "log_type": result.get("log_type", "all")
                 }
             else:
                 return False, result["message"], {
                     "error_code": result.get("error_code"),
-                    "platform": result.get("platform", "unknown")
+                    "platform": result.get("platform", "unknown"),
+                    "log_type": log_type
                 }
                 
         except Exception as e:
@@ -163,3 +173,35 @@ class SystemCommandHandler:
             error_msg = f"Erro obtendo informações do sistema: {str(e)}"
             main_logger.error(error_msg)
             return False, error_msg, None
+        
+    def _handle_shutdown_system(self, parts: list) -> Tuple[bool, str, Optional[Dict]]:
+        """Handler para desligar o sistema usando ServiceManager"""
+        try:
+            main_logger.info("🔄 Iniciando procedimento de desligamento do sistema via ServiceManager...")
+            
+            # Usa o ServiceManager para executar o shutdown
+            result = self.service_manager.shutdown_system()
+            
+            if result["success"]:
+                return True, result["message"], {
+                    "platform": result.get("platform"),
+                    "command": result.get("command"),
+                    "shutdown_initiated": True,
+                    "timeout": result.get("timeout", False)
+                }
+            else:
+                return False, result["message"], {
+                    "platform": result.get("platform"),
+                    "command": result.get("command"),
+                    "error": result.get("error"),
+                    "error_code": result.get("error_code")
+                }
+                
+        except Exception as e:
+            error_msg = f"Erro no procedimento de shutdown: {str(e)}"
+            main_logger.error(error_msg)
+            return False, error_msg, {
+                "platform": "unknown",
+                "error": str(e),
+                "error_code": "HANDLER_EXCEPTION"
+            }

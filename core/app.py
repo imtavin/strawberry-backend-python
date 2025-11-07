@@ -52,7 +52,7 @@ class StrawberryAIApp:
             self.camera_service = CameraService(self.config)
             self.ml_service = MLService(self.config)
             self.wifi_service = WiFiService()
-            self.service_manager = ServiceManager("strawberry-ai")
+            self.service_manager = ServiceManager("strawberry-backend")
             
             # Inicializa command handler
             self.command_handler = SystemCommandHandler(
@@ -167,11 +167,12 @@ class StrawberryAIApp:
         
         main_logger.debug(f"📨 Comando recebido: {command[:100]}...")
         
-        # Tenta processar com system command handler primeiro
+        # Tenta processar com system command handler
         if self.command_handler and self.command_handler.handle_command(command, self.tcp_server):
+            main_logger.debug(f"Comando processado pelo SystemCommandHandler: {command.split(':')[0]}")
             return
         
-        # Comandos legados
+        # Se não encontrou, tenta handlers legados
         command_handlers = {
             'REGISTER_UDP': self._handle_register_udp,
             'FOTO': self._handle_capture,
@@ -180,11 +181,13 @@ class StrawberryAIApp:
             'WIFI_CONNECT': self._handle_wifi_connect,
             'RESTART_SERVICE': self._handle_restart_service,
             'SHOW_LOGS': self._handle_show_logs,
+            'SHUTDOWN_SYSTEM': self._handle_shutdown_system,
         }
         
         # Encontra o handler apropriado
         for cmd_prefix, handler in command_handlers.items():
             if command.startswith(cmd_prefix):
+                main_logger.debug(f"Comando processado por handler legado: {cmd_prefix}")
                 handler(command, client_addr)
                 return
         
@@ -359,43 +362,80 @@ class StrawberryAIApp:
             main_logger.error(f"Erro ao reiniciar serviço: {e}")
 
     def _handle_show_logs(self, command: str, client_addr: tuple) -> None:
-        """Handler para mostrar logs"""
+        """Handler legado para logs"""
         try:
-            main_logger.info("Solicitando logs do sistema...")
-            import subprocess
+            main_logger.info("📋 Processando comando SHOW_LOGS via handler legado...")
             
-            # Tenta vários arquivos de log
-            log_files = [
-                "/var/log/strawberry-ai.log",
-                "/tmp/strawberry-ai.log",
-                "logs/app.log"
-            ]
+            # Parse básico do comando
+            parts = command.split(':')
+            lines = 50
+            log_type = "all"
             
-            logs = ""
-            for log_file in log_files:
+            if len(parts) > 2:
                 try:
-                    result = subprocess.run(
-                        ["sudo", "tail", "-50", log_file], 
-                        capture_output=True, 
-                        text=True,
-                        timeout=10
-                    )
-                    if result.returncode == 0 and result.stdout.strip():
-                        logs = result.stdout
-                        break
-                except:
-                    continue
+                    lines = int(parts[2])
+                except ValueError:
+                    pass
             
-            if not logs:
-                logs = "Nenhum log encontrado nos locais habituais"
+            # Usa o ServiceManager atualizado
+            if self.service_manager:
+                result = self.service_manager.get_service_logs(lines=lines, log_type=log_type)
                 
-            self.tcp_server.send_text(f"LOGS:{logs}")
-            main_logger.info("Logs enviados para o cliente")
-            
+                if result["success"]:
+                    logs_content = result["logs"]
+                    # Formata resposta no formato legado esperado pelo frontend
+                    response = f"LOGS:{logs_content}"
+                    self.tcp_server.send_text(response)
+                    main_logger.info(f"Logs enviados ({result.get('lines', 0)} linhas, tipo: {log_type})")
+                else:
+                    error_msg = f"LOGS:Erro: {result['message']}"
+                    self.tcp_server.send_text(error_msg)
+                    main_logger.error(f"Erro ao obter logs: {result['message']}")
+            else:
+                error_msg = "LOGS:Erro: ServiceManager não disponível"
+                self.tcp_server.send_text(error_msg)
+                main_logger.error("ServiceManager não disponível para logs")
+                
         except Exception as e:
-            error_msg = f"LOGS:Erro: {e}"
+            error_msg = f"LOGS:Erro: {str(e)}"
             self.tcp_server.send_text(error_msg)
-            main_logger.error(f"Erro ao obter logs: {e}")
+            main_logger.error(f"Erro no handler legado de logs: {e}")
+
+    def _handle_shutdown_system(self, command: str, client_addr: tuple) -> None:
+        """Handler para desligar o sistema usando ServiceManager"""
+        main_logger.info("🔄 Recebido comando para desligar o sistema via ServiceManager...")
+        
+        try:
+            # Usa o ServiceManager para executar o shutdown
+            if hasattr(self, 'service_manager') and self.service_manager:
+                result = self.service_manager.shutdown_system()
+                
+                if result["success"]:
+                    # Enviar confirmação
+                    if self.tcp_server:
+                        self.tcp_server.send_text(f"SHUTDOWN:SUCCESS:{result['message']}")
+                    main_logger.info(f"✅ {result['message']}")
+                    
+                    # Pequeno delay para garantir que a mensagem foi enviada
+                    time.sleep(2)
+                    
+                else:
+                    # Enviar erro
+                    if self.tcp_server:
+                        self.tcp_server.send_text(f"SHUTDOWN:FAILED:{result['message']}")
+                    main_logger.error(f"❌ {result['message']}")
+                    
+            else:
+                error_msg = "ServiceManager não disponível"
+                if self.tcp_server:
+                    self.tcp_server.send_text(f"SHUTDOWN:ERROR:{error_msg}")
+                main_logger.error(f"❌ {error_msg}")
+                
+        except Exception as e:
+            error_msg = f"Erro inesperado no shutdown: {e}"
+            if self.tcp_server:
+                self.tcp_server.send_text(f"SHUTDOWN:ERROR:{error_msg}")
+            main_logger.error(f"❌ {error_msg}")
 
     def run(self) -> None:
         """Executa a aplicação principal"""
